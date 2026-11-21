@@ -11,19 +11,79 @@ PUBLIC_KEY_URL="${PUBLIC_KEY_URL:-https://api.fileodon.dev/api/organization/sftp
 PUBLIC_KEY_PATH="${PUBLIC_KEY_PATH:-$INSTALL_DIR/public.pem}"
 LISTEN_PORT="${LISTEN_PORT:-5096}"
 SERVICE_USER="${SERVICE_USER:-fileodon}"
+BUILD_DIR="${BUILD_DIR:-}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
 
-command -v dotnet >/dev/null || { echo "dotnet is required." >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required." >&2; exit 1; }
 command -v systemctl >/dev/null || { echo "systemctl is required." >&2; exit 1; }
 
+usage() {
+    cat <<EOF
+Usage: sudo $0 [options]
+
+Options:
+  --skip-build              Use an existing build directory instead of running dotnet publish
+  --build-dir DIR           Existing publish directory (implies --skip-build)
+  -h, --help                Show this help
+
+Environment:
+  INSTALL_DIR               Installation directory (default: /opt/fileodon-distribution-listener)
+  BUILD_DIR                 Existing publish directory
+  SKIP_BUILD                Set to 1 to use BUILD_DIR
+  PUBLIC_KEY_URL            Master API public-key endpoint
+  PUBLIC_KEY_PATH           Public-key destination
+  LISTEN_PORT               Listener port (default: 5096)
+  SERVICE_NAME              systemd service name
+  SERVICE_USER              Service account name
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-build)
+            SKIP_BUILD=1
+            shift
+            ;;
+        --build-dir)
+            [[ $# -ge 2 ]] || { echo "Error: --build-dir requires a directory." >&2; exit 1; }
+            BUILD_DIR="$2"
+            SKIP_BUILD=1
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown option '$1'" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
 id "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 
-rm -rf "$INSTALL_DIR"
-dotnet publish "$PROJECT_DIR" \
-  -c Release \
-  -r linux-x64 \
-  --self-contained false \
-  -o "$INSTALL_DIR"
+if [[ "$SKIP_BUILD" == "1" ]]; then
+    [[ -n "$BUILD_DIR" ]] || { echo "Error: --build-dir or BUILD_DIR is required with --skip-build." >&2; exit 1; }
+    BUILD_DIR="$(cd -- "$BUILD_DIR" && pwd)"
+    [[ -f "$BUILD_DIR/FileodonDistributionListener.dll" ]] \
+        || { echo "Error: build directory '$BUILD_DIR' does not contain FileodonDistributionListener.dll." >&2; exit 1; }
+
+    rm -rf "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
+    cp -a "$BUILD_DIR"/. "$INSTALL_DIR"/
+    echo "Using existing build directory: $BUILD_DIR"
+else
+    command -v dotnet >/dev/null || { echo "dotnet is required." >&2; exit 1; }
+
+    rm -rf "$INSTALL_DIR"
+    dotnet publish "$PROJECT_DIR" \
+      -c Release \
+      -r linux-x64 \
+      --self-contained false \
+      -o "$INSTALL_DIR"
+fi
 
 mkdir -p "$(dirname "$PUBLIC_KEY_PATH")"
 curl --fail --silent --show-error --location \
